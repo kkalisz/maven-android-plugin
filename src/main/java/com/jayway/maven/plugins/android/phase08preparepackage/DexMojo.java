@@ -33,13 +33,18 @@ import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.codehaus.plexus.archiver.ArchiverException;
+import org.codehaus.plexus.archiver.UnArchiver;
 import org.codehaus.plexus.archiver.jar.JarArchiver;
 import org.codehaus.plexus.archiver.util.DefaultFileSet;
+import org.codehaus.plexus.archiver.zip.ZipUnArchiver;
+import org.codehaus.plexus.logging.Logger;
+import org.codehaus.plexus.logging.console.ConsoleLogger;
 
 import java.io.File;
 import java.io.FilenameFilter;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -48,9 +53,10 @@ import static com.jayway.maven.plugins.android.common.AndroidExtension.AAR;
 import static com.jayway.maven.plugins.android.common.AndroidExtension.APK;
 import static com.jayway.maven.plugins.android.common.AndroidExtension.APKLIB;
 
+
 /**
  * Converts compiled Java classes to the Android dex format.
- * 
+ *
  * @author hugo.josefson@jayway.com
  */
 @Mojo(
@@ -63,7 +69,7 @@ public class DexMojo extends AbstractAndroidMojo
 
     /**
      * Configuration for the dex command execution. It can be configured in the plugin configuration like so
-     * 
+     *
      * <pre>
      * &lt;dex&gt;
      *   &lt;jvmArguments&gt;
@@ -117,7 +123,7 @@ public class DexMojo extends AbstractAndroidMojo
      */
     @Parameter( property = "android.dex.predex", defaultValue = "false" )
     private boolean dexPreDex;
-    
+
     /**
      * Decides whether to use force jumbo mode.
      */
@@ -218,7 +224,7 @@ public class DexMojo extends AbstractAndroidMojo
 
     /**
      * Gets the input files for dex. This is a combination of directories and jar files.
-     * 
+     *
      * @return
      */
     private Set< File > getDexInputFiles() throws MojoExecutionException
@@ -555,11 +561,159 @@ public class DexMojo extends AbstractAndroidMojo
         {
             throw new MojoExecutionException( "", e );
         }
+
+        if ( parsedMultiDex && outputFile != null )
+        {
+            // we assume that parent directory od output file is our directory, can we !?
+            File parentFile = outputFile.getParentFile();
+            File dexDirectory = new File( parentFile, "dexes" );
+
+            extractDexFiles( outputFile, dexDirectory );
+
+            List<File> dexFiles = listAllDexFiles( dexDirectory );
+
+            File primaryDexFile = getPrimaryDexFile( dexFiles );
+
+            List<File> secondaryDexFiles = getSecondaryDexFilesList( primaryDexFile, dexFiles );
+
+            copyPrimaryDexToCorrectLocation( parentFile, primaryDexFile );
+
+            copySecondaryDexFilesToCombinedAssets( secondaryDexFiles );
+
+        }
+    }
+
+    /**
+     * @param secondaryDexFiles - list of generated secondary dex files
+     * @throws MojoExecutionException occurred exception if copying of any file was unsuccessfully
+     */
+    private void copySecondaryDexFilesToCombinedAssets( List<File> secondaryDexFiles ) throws MojoExecutionException
+    {
+        if ( !combinedAssets.exists() )
+        {
+            combinedAssets.mkdir();
+        }
+        for ( File dexFile : secondaryDexFiles )
+        {
+            copySingleDexToCombinedAssets( dexFile );
+        }
+
+    }
+
+    /**
+     * @param dexFile - single addtional dex file to copy
+     * @throws MojoExecutionException occurred exception if copying file was unsuccessfully
+     */
+    private void copySingleDexToCombinedAssets( File dexFile ) throws MojoExecutionException
+    {
+        try
+        {
+            FileUtils.copyFileToDirectory( dexFile, combinedAssets );
+        }
+        catch ( IOException e )
+        {
+            String exceptionTemplate = "cannot copy dex file: %s to combined-assets folder: %s";
+            String exceptionMessage = String.format(  exceptionTemplate, dexFile.getName(), combinedAssets.getName() );
+            throw new MojoExecutionException( exceptionMessage, e );
+        }
+    }
+
+    /**
+     * @param primaryDexFile main dex file
+     * @param dexFiles all generated dex files list
+     * @return list of dex files excluding <code>primaryDexFile</code>
+     */
+    private List<File> getSecondaryDexFilesList( File primaryDexFile, List<File> dexFiles )
+    {
+        ArrayList<File> secondaryDexFilesList = new ArrayList<File>( dexFiles );
+        secondaryDexFilesList.remove( primaryDexFile );
+        return secondaryDexFilesList;
+    }
+
+    /**
+     * @param parentFile target directory
+     * @param primaryDexFile main dex file
+     * @throws MojoExecutionException occurred exception if copying file was unsuccessfully
+     */
+    private void copyPrimaryDexToCorrectLocation( File parentFile, File primaryDexFile ) throws MojoExecutionException
+    {
+        File correctPrimaryDexFileLocation = new File( parentFile, "classes.dex" );
+
+        try
+        {
+            FileUtils.copyFile( primaryDexFile, correctPrimaryDexFileLocation );
+        }
+        catch ( IOException e )
+        {
+            throw new MojoExecutionException( "Exception in copying primary dex file" );
+        }
+    }
+
+    /**
+     * @param dexFiles list of all generated dex files
+     * @return primary dex file, file with name classes.dex or classes1.dex
+     * @throws MojoExecutionException occurred exception there is no primary dex file
+     */
+    private File getPrimaryDexFile( List<File> dexFiles ) throws MojoExecutionException
+    {
+        for ( File dexFile : dexFiles )
+        {
+            String dexFileName = dexFile.getName();
+            if ( dexFileName.equalsIgnoreCase( "classes.dex" ) || dexFileName.equalsIgnoreCase( "classes1.dex" ) )
+            {
+                return dexFile;
+            }
+        }
+        throw new MojoExecutionException( "There is no primary Dex File" );
+    }
+
+    /**
+     * @param dexesDirectory directory to search dex files
+     * @return list of all dex files in directory
+     */
+    private List<File> listAllDexFiles( File dexesDirectory )
+    {
+        FilenameFilter dexFileNameFilter = new java.io.FilenameFilter()
+        {
+            @Override
+            public boolean accept( java.io.File dir, String name )
+            {
+                // well this check will return correct values but
+                // we should return all files with dex extension
+                if ( name.contains( "classes" ) && name.contains( "dex" ) )
+                {
+                    return true;
+                }
+                return false;
+            }
+        };
+        return Arrays.asList( dexesDirectory.listFiles( dexFileNameFilter ) );
+    }
+
+    /**
+     * @param inputFile - dx output it would be zipped list of dex files or single dex
+     * @param outputFile directory to extract files
+     */
+    private void extractDexFiles( final File inputFile, final File outputFile )
+    {
+        UnArchiver unArchiver = new ZipUnArchiver( inputFile )
+        {
+            @Override
+            protected Logger getLogger()
+            {
+                return new ConsoleLogger( Logger.LEVEL_DEBUG, "mutlidex-unarchiver" );
+            }
+        };
+        if ( !outputFile.exists() )
+        {
+            outputFile.mkdirs();
+        }
+        unArchiver.setDestDirectory( outputFile );
+        unArchiver.extract();
     }
 
     /**
      * Figure out the full path to the current java executable.
-     * 
      * @return the full path to the current java executable.
      */
     private static File getJavaExecutable()
@@ -605,7 +759,6 @@ public class DexMojo extends AbstractAndroidMojo
 
     /**
      * Makes sure the string ends with "/"
-     * 
      * @param prefix
      *            any string, or null.
      * @return the prefix with a "/" at the end, never null.
@@ -622,7 +775,6 @@ public class DexMojo extends AbstractAndroidMojo
 
     /**
      * Adds a directory to a {@link JarArchiver} with a directory prefix.
-     * 
      * @param jarArchiver
      * @param directory
      *            The directory to add.
@@ -654,7 +806,6 @@ public class DexMojo extends AbstractAndroidMojo
 
     /**
      * Adds a Java Resources directory (typically "src/main/resources") to a {@link JarArchiver}.
-     * 
      * @param jarArchiver
      * @param javaResource
      *            The Java resource to add.

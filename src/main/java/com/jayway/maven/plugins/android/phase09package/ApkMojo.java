@@ -322,10 +322,6 @@ public class ApkMojo extends AbstractAndroidMojo
     {
         //this needs to come from DexMojo
         File dexFile = new File( project.getBuild().getDirectory(), "classes.dex" );
-        if ( !dexFile.exists() )
-        {
-            dexFile = new File( project.getBuild().getDirectory(), "classes.zip" );
-        }
 
         File zipArchive = new File( project.getBuild().getDirectory(), project.getBuild().getFinalName() + ".ap_" );
         ArrayList<File> sourceFolders = new ArrayList<File>();
