@@ -21,6 +21,8 @@ import com.jayway.maven.plugins.android.CommandExecutor;
 import com.jayway.maven.plugins.android.ExecutionException;
 import com.jayway.maven.plugins.android.common.Const;
 import com.jayway.maven.plugins.android.common.ZipExtractor;
+import com.jayway.maven.plugins.android.config.ConfigHandler;
+import com.jayway.maven.plugins.android.config.PullParameter;
 import com.jayway.maven.plugins.android.configuration.Dex;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang.StringUtils;
@@ -169,6 +171,15 @@ public class DexMojo extends AbstractAndroidMojo
     @Parameter( property = "android.dex.minimalmaindex", defaultValue = "false" )
     private boolean dexMinimalMainDex;
 
+    @PullParameter(defaultValue = "${project.build.directory}/proguard")
+    private File parsedOutputDirectory;
+
+    /**
+     * The java target directory. Ie target/classes.
+     */
+    @Parameter(defaultValue = "${project.build.directory}", readonly = true)
+    protected File targetDirectory;
+
     private String[] parsedJvmArguments;
     private boolean parsedCoreLibrary;
     private boolean parsedNoLocals;
@@ -189,10 +200,23 @@ public class DexMojo extends AbstractAndroidMojo
     public void execute() throws MojoExecutionException, MojoFailureException
     {
 
+        ConfigHandler configHandler = new ConfigHandler( this, this.session, this.execution );
+        configHandler.parseConfiguration();
+
         CommandExecutor executor = CommandExecutor.Factory.createDefaultCommmandExecutor();
         executor.setLogger( this.getLog() );
 
         parseConfiguration();
+
+        if ( obfuscatedJar != null && obfuscatedJar.exists() )
+        {
+            File updatedAfterProguardMainDexFileList = new File( targetDirectory, "mainDexClassFile_proguard.txt" );
+            MainDexListProguardHelper mainDexListProguardHelper = new MainDexListProguardHelper();
+            File mainDexClassesFile = mainDexListProguardHelper.updateMainDexListAfterProguard
+                    ( parsedOutputDirectory, new File( parsedMainDexList ), updatedAfterProguardMainDexFileList );
+
+            parsedMainDexList = mainDexClassesFile.getAbsolutePath();
+        }
         File outputFile;
         if ( parsedMultiDex )
         {
@@ -394,6 +418,7 @@ public class DexMojo extends AbstractAndroidMojo
             {
                 parsedMainDexList = dex.getMainDexList();
             }
+
             if ( dex.isMinimalMainDex() == null )
             {
                 parsedMinimalMainDex = dexMinimalMainDex;
